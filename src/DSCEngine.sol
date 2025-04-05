@@ -1,16 +1,16 @@
-// SPDX-License_identofier: MIT
-pragma solidity ^0.8.118;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.18;
 
 import {DecentralizedStableCoin} from "./DecentralizedStableCoin.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
-
+import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 /**
  * @title DSCENgine
  * @author Aditya Kiran Choudhary
  *
  * The system is designe to be as minimal as possible, and have  the tokens maintain a 1 token == $1 peg.
  */
+
 contract DSCENgine {
     ///////////////
     //   Errors  //
@@ -19,12 +19,16 @@ contract DSCENgine {
     error DSCEngine__TokenAddressesAndPriceFeedAddressesMustBeSameLength();
     error DSCEngine__NotAllowedToken();
     error DSCEngine__TransferFailed();
+    error DSCEngine__BreaksHealthfactor(uint256 healthFactor);
 
     /////////////////////
     // State Variables //
     /////////////////////
     uint256 private constant ADDITIONAL_FEED_PRECISION = 1e10;
     uint256 private constant PRECISION = 1e18;
+    uint256 private constant LIQUIDATION_THRESHOLD = 50;
+    uint256 private constant LIQUIDATION_PRECISION = 100;
+    uint256 private constant MIN_HEALTH_FACTOR = 1;
 
     mapping(address token => address priceFeed) private s_priceFeeds;
     mapping(address user => mapping(address token => uint256 amount)) private s_collateralDeposited;
@@ -58,12 +62,14 @@ contract DSCENgine {
     ///////////////
     // functions //
     ///////////////
-    constructor(address[] memory tokenAddresses, address[] memory PriceFeedAddresses, address dscAddress) {
-        if (tokenAddresses.length != PriceFeedAddress.length) {
+    constructor(address[] memory tokenAddresses, address[] memory priceFeedAddresses, address dscAddress) {
+        if (tokenAddresses.length != priceFeedAddresses.length) {
             revert DSCEngine__TokenAddressesAndPriceFeedAddressesMustBeSameLength();
         }
+        // These feeds will be the USD pairs
+        // For example ETH / USD or MKR / USD
         for (uint256 i = 0; i < tokenAddresses.length; i++) {
-            s_priceFeeds(tokenAddresses[i] = PriceFeedAddresses[i]);
+            s_priceFeeds[tokenAddresses[i]] = priceFeedAddresses[i];
             s_collateralTokens.push(tokenAddresses[i]);
         }
         i_dsc = DecentralizedStableCoin(dscAddress);
@@ -85,7 +91,7 @@ contract DSCENgine {
     {
         s_collateralDeposited[msg.sender][tokenCollateralAddress] += amountCollateral;
         emit CollateralDeposited(msg.sender, tokenCollateralAddress, amountCollateral);
-        IERC20(tokenCollateralAddress).transferFrom(msg.sender, address(this), amountCollateral);
+        bool success = IERC20(tokenCollateralAddress).transferFrom(msg.sender, address(this), amountCollateral);
         if (!success) {
             revert DSCEngine__TransferFailed();
         }
@@ -97,7 +103,7 @@ contract DSCENgine {
 
     function mintDsc(uint256 amountDscToMint) external moreThanZero(amountDscToMint) {
         s_DSCMinted[msg.sender] += amountDscToMint;
-        revertIfHealthFactorIsBroken(msg.sender);
+        _revertIfHealthFactorIsBroken(msg.sender);
     }
 
     function burnDsc() external {}
@@ -115,20 +121,32 @@ contract DSCENgine {
         returns (uint256 totalDSCMinted, uint256 collateralValueInUsd)
     {
         totalDSCMinted = s_DSCMinted[user];
-        collateralValueInusd = getAccountCollateralValue(user);
+        collateralValueInUsd = getAccountCollateralValue(user);
     }
 
     function _healthFactor(address user) private view returns (uint256) {
         (uint256 totalDSCMinted, uint256 collateralValueInUsd) = _getAccountInformation(user);
+        uint256 collateraAdjustedForThreshold = (collateralValueInUsd * LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION; //understand the math here
+        // $150 ETH / 100 DSC = 1.5
+        // 150 * 50 = 7500 / 100 = (75 / 100) < 1 can not mint 100
+
+        // $1000 ETH / 100 DSC
+        // 1000 * 50 = 50000 / 100 = (500 / 100) > 1 can mint 100
+        return (collateraAdjustedForThreshold * PRECISION) / totalDSCMinted;
     }
 
-    function _revertIfHealthFactorIsBroken(address user) internal view {}
+    function _revertIfHealthFactorIsBroken(address user) internal view {
+        uint256 userHealthFactor = _healthFactor(user);
+        if (userHealthFactor < MIN_HEALTH_FACTOR) {
+            revert DSCEngine__BreaksHealthfactor(userHealthFactor);
+        }
+    }
 
     //////////////////////////////////////
     // Public & External View functions //
     //////////////////////////////////////
     function getAccountCollateralValue(address user) public view returns (uint256 totalCollateralValueInUsd) {
-        for (uint256 i = 0; i < s - collateralTokens.length; i++) {
+        for (uint256 i = 0; i < s_collateralTokens.length; i++) {
             address token = s_collateralTokens[i];
             uint256 amount = s_collateralDeposited[user][token];
             totalCollateralValueInUsd += getUsdValue(token, amount);
