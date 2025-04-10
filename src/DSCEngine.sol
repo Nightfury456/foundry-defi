@@ -266,4 +266,12 @@ contract DSCEngine {
         (, int256 price,,,) = priceFeed.latestRoundData();
         return ((uint256(price) * ADDITIONAL_FEED_PRECISION) * amount) / PRECISION;
     }
+
+    function getAccountInformation(address user)
+        external
+        view
+        returns (uint256 totalDSCMinted, uint256 collateralValueInUsd)
+    {
+        (totalDSCMinted, collateralValueInUsd) = _getAccountInformation(user);
+    }
 }
