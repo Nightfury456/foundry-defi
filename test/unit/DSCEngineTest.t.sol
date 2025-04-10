@@ -75,7 +75,7 @@ contract DSCEngineTest is Test {
         vm.stopPrank();
     }
 
-    function testIsAllowedToken() public {
+    function testrevertWithUnapprovedCollateral() public {
         ERC20Mock ranToken = new ERC20Mock("RAN", "RAN", USER, AMOUNT_COLLATERAL);
         vm.startPrank(USER);
         vm.expectRevert(DSCEngine.DSCEngine__NotAllowedToken.selector);
